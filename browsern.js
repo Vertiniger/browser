@@ -233,59 +233,110 @@ async function JsChallenge(page) {
     };
 };
 
-async function detectChallenge(browser, page) {
-    const content = await page.content() ;
-    if (content.includes("challenge-platform")) {
-        try {
-            await sleep(2.5);
-            await mouser(page);
-            const clx = 533;
-            const cly = 289;
-            startTime = Date.now();
-            await page.screenshot({ path: '01.png',
-              clip: { x: 503, y: 225,
-                   width: 307, height: 125,
-              },
-            });
+async function detectChallenge(browserProxy, page) {
+    const timestamp = getCurrentTime();
 
-            const image1 = fs.readFileSync('01.png');
-            const image2 = fs.readFileSync('captcha.png');
-            const compareImages = (image1, image2) => {
-              return new Promise((resolve, reject) => {
-                resemble(image1)
-                 .compareTo(image2)
-                 .ignoreColors()
-                 .onComplete((result) => {
-                  const misMatch = parseFloat(result.misMatchPercentage);
-                  if (misMatch === 0) {
-                    resolve(true);
-                  } else {
-                   CustomPageTurnstile(page);
-                   resolve(false);
-                   return;
-                  }
-                 });
-              });
-            };
-            const shouldProceed = await compareImages(image1, image2);
-            if (!shouldProceed) return;
-            console.log('[INFO] Detected protection ~ Cloudflare Interactive Challenge');
-            const element = await page.$('body > div.main-wrapper > div > div > div > div');
+    try {
+        const title = await page.title();
+        const content = await page.content();
 
-            if (element) {
-              const box = await element.boundingBox();
-              await page.mouse.click(box.x + 30, box.y + 30);
-            } else {
-             console.log('[INFO] Element not found');
-            }
-            console.log('[DEBUG] Mouse clicked on TurnstileBox');
-            await sleep(3);
-            await JsChallenge(page);
-        } catch (error) {
-            console.log(`[ERROR] ${error}`);
-        } finally {
+        if (title === "Attention Required! | Cloudflare") {
+            throw new Error(`${timestamp} \x1b[46m | \x1b[0m ${browserProxy} \x1b[41m | BLOCKED\x1b[0m`);
+        }
+
+        if (!content.includes("challenge-platform")) {
+            colored(colors.CYAN, `${timestamp} \x1b[46m | \x1b[0m ${browserProxy} \x1b[46m | \x1b[0m \x1b[40m No challenge detected \x1b[0m`);
+            await sleep(5);
             return;
         }
+
+        colored(colors.YELLOW, `${timestamp} [INFO] Detected Cloudflare Interactive Challenge`);
+
+        await sleep(2.5);
+        await mouser(page); // Simulasi mouse
+        await sleep(2);
+
+        const screenshotPath = "01.png";
+        await page.screenshot({
+            path: screenshotPath,
+            clip: { x: 503, y: 225, width: 307, height: 125 },
+        });
+
+        if (!fs.existsSync("captcha.png")) {
+            colored(colors.RED, `${timestamp} [WARN] captcha.png not found, fallback to Turnstile`);
+            await CustomPageTurnstile(page);
+            return;
+        }
+
+        const image1 = fs.readFileSync(screenshotPath);
+        const image2 = fs.readFileSync("captcha.png");
+
+        const match = await new Promise(resolve => {
+            resemble(image1)
+                .compareTo(image2)
+                .ignoreColors()
+                .onComplete(result => {
+                    const misMatch = parseFloat(result.misMatchPercentage);
+                    console.log(`${timestamp} [DEBUG] Image mismatch: ${misMatch}%`);
+                    resolve(misMatch <= 2.5); // tolerance
+                });
+        });
+
+        if (!match) {
+            console.warn(`${timestamp} [WARN] Challenge visual mismatch, fallback to Turnstile`);
+            await CustomPageTurnstile(page);
+            return;
+        }
+
+        const elements = await page.$$('[name="cf-turnstile-response"]');
+        if (elements.length > 0) {
+            for (const el of elements) {
+                try {
+                    const parent = await el.evaluateHandle(el => el.parentElement);
+                    const box = await parent.boundingBox();
+                    if (box) {
+                        await page.mouse.click(box.x + 30, box.y + box.height / 2);
+                        console.log(`${timestamp} [INFO] Clicked Turnstile iframe`);
+                    }
+                } catch (err) {
+                    console.warn(`[WARN] Click error: ${err.message}`);
+                }
+            }
+        } else {
+            console.warn(`${timestamp} [WARN] cf-turnstile-response not found, using heuristic click`);
+            const coordinates = await page.evaluate(() => {
+                let result = [];
+                document.querySelectorAll("div").forEach((item) => {
+                    const box = item.getBoundingClientRect();
+                    const style = window.getComputedStyle(item);
+                    if (
+                        style.margin === "0px" &&
+                        style.padding === "0px" &&
+                        box.width > 290 && box.width <= 310 &&
+                        !item.querySelector("*")
+                    ) {
+                        result.push({ x: box.x, y: box.y, w: box.width, h: box.height });
+                    }
+                });
+                return result;
+            });
+
+            for (const c of coordinates) {
+                try {
+                    await page.mouse.click(c.x + 30, c.y + c.h / 2);
+                    console.log(`${timestamp} [INFO] Clicked heuristik challenge area`);
+                } catch (err) {
+                    console.warn(`[WARN] Heuristik click error: ${err.message}`);
+                }
+            }
+        }
+
+        await sleep(3);
+        await JsChallenge(page); // Jika ada JS challenge lanjutkan
+
+    } catch (error) {
+        console.error(`${timestamp} \x1b[41m [ERROR] detectChallenge: ${error.message} \x1b[0m`);
+        await CustomPageTurnstile(page); // Final fallback
     }
 }
 
@@ -394,155 +445,140 @@ async function DDGCaptcha(page) {
             }
         }
     }
-    return !!!s;
+    return;
+}
+
+function getCurrentTime() {
+    const now = new Date();
+    return `[${now.toISOString().split('T')[1].split('.')[0]}]`;
 }
 
 async function openBrowser(host, proxy = null) {
     const userAgent = userAgents[Math.floor(Math.random() * userAgents.length)];
-	const args = [
-		...(proxy ? [`--proxy-server=${proxy}`] : []),
-		"--no-sandbox",
-		"--no-first-run",
-		"--test-type",
-		"--user-agent=" + userAgent,
-		"--disable-browser-side-navigation",
-		"--disable-extensions",
-		"--disable-gpu",
-		"--disable-dev-shm-usage",
-		"--ignore-certificate-errors",
-		"--disable-background-networking",
-		"--disable-default-apps",
-		"--disable-sync",
-		"--metrics-recording-only",
-		"--disable-translate",
-		"--disable-popup-blocking",
-		"--disable-component-extensions-with-background-pages",
-		"--disable-background-timer-throttling",
-		"--disable-renderer-backgrounding",
-		"--disable-device-discovery-notifications",
-		"--disable-client-side-phishing-detection",
-		"--disable-component-update",
-		"--enable-automation"
-	];
-	
-	if (headers === 'basic') {
-		args.push("--disable-blink-features=AutomationControlled");
-		args.push("--disable-features=IsolateOrigins,site-per-process");
-		args.push("--disable-infobars");
-		args.push("--hide-scrollbars");
-	} else if (headers === 'undetect') {
-		args.push("--disable-blink-features=AutomationControlled");
-		args.push("--disable-features=IsolateOrigins,site-per-process");
-		args.push("--disable-infobars");
-		args.push("--hide-scrollbars");
-		args.push("--disable-setuid-sandbox");
-		args.push("--mute-audio");
-		args.push("--no-zygote");
-		args.push("--disable-hang-monitor");
-		args.push("--disable-breakpad");
-		args.push("--disable-notifications");
-		args.push("--disable-permissions-api");
-	}
-	
-	const options = {
-		headless: `${headless}`, 
-		args: args,
-		ignoreHTTPSErrors: true,
-		javaScriptEnabled: true, 
-		};
+
+    const args = [
+        ...(proxy ? [`--proxy-server=${proxy}`] : []),
+        "--no-sandbox",
+        "--disable-setuid-sandbox",
+        "--disable-dev-shm-usage",
+        "--disable-gpu",
+        "--ignore-certificate-errors",
+        "--disable-background-networking",
+        "--disable-sync",
+        "--disable-translate",
+        "--disable-popup-blocking",
+        "--disable-component-update",
+        "--disable-default-apps",
+        "--disable-renderer-backgrounding",
+        "--disable-background-timer-throttling",
+        "--mute-audio",
+        "--no-first-run",
+        "--disable-infobars",
+        "--disable-features=IsolateOrigins,site-per-process",
+        "--disable-blink-features=AutomationControlled",
+        "--hide-scrollbars",
+        "--user-agent=" + userAgent
+    ];
+
+    const options = {
+        headless: headless ?? 'new',
+        args,
+        ignoreHTTPSErrors: true,
+        timeout: 60000,
+    };
 
     let browser;
     try {
         browser = await puppeteer.launch(options);
-    } catch (error) {
-        console.log(`[ERROR] Browser ${error}`);
-        return;
-    }
-    try {
         const [page] = await browser.pages();
-        const client = page._client();
-        if (headers === 'basic') {
-          await page.setExtraHTTPHeaders(HeadersBasic);
-        } else if (headers === 'undetect'){
-         await page.setExtraHTTPHeaders(HeadersUndetect);
-        };
-        const frameNavigatedHandler = (frame) => {
-            if (frame.url().includes("challenges.cloudflare.com")) {
-              if (frame._id) {
-                client.send("Target.detachFromTarget", { targetId: frame._id }).catch(err => {
-                 console.log(`[ERROR] Failed to detach from target: ${err.message}`);
-                });
-              } else {
-               console.log("[INFO] Frame ID is not valid");
-              }
-            }
-        };
-        await page.on("framenavigated", frameNavigatedHandler);
+        if (!page || page.isClosed()) throw new Error("No active page found after browser launch.");
 
-        await page.setViewport({ width: 1920, height: 1200 });
-        page.setDefaultNavigationTimeout(10000);
+        const client = await page.target().createCDPSession();
+        await client.send('Network.enable');
 
-        const BrowserPage = await page.goto(host, { waitUntil: "domcontentloaded" });
-	page.on('dialog', async dialog => {
-          await dialog.accept();
+        await page.setDefaultNavigationTimeout(1500 + Math.random() * 1000);
+        await page.setViewport({ width: 1920, height: 1080 });
+
+        await page.setExtraHTTPHeaders({
+            'accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+            'accept-encoding': 'gzip, deflate, br',
+            'accept-language': 'en-US,en;q=0.9',
+            'dnt': '1',
+            'upgrade-insecure-requests': '1',
+            'sec-fetch-mode': 'navigate',
+            'sec-fetch-user': '?1',
+            'sec-fetch-dest': 'document',
+            'referer': host,
+            'sec-ch-ua-mobile': '?0',
+            'sec-ch-ua-platform': 'Windows'
         });
 
-        console.log(`[INFO] Browser Opening Host Page ${host}`);
-	const status = await BrowserPage.status();
-        console.log(`[INFO] Status Code: ${status}`);
-        const title = await page.evaluate(() => document.title);
-        if (['Just a moment...', 'Checking your browser...', '安全检查中……', '?'].includes(title)) {
-          console.log(`[INFO] Title: ${title}`);
+        page.on("dialog", async dialog => {
+            try { await dialog.accept(); } catch {}
+        });
 
-          await page.on('response', async resp => {
-            HeadersBrowser = resp.request().headers();
-          });
-          await detectChallenge(browser, page);
-        } else if (['Vercel Security Checkpoint'].includes(title)) {
-           console.log(`[INFO] Title: ${title}`);
-           console.log(`[INFO] Detected protection ~ Vercel JS Challenge`);
-           await sleep(3);
-           const x = Math.floor(Math.random() * 800) + 100;
-           const y = Math.floor(Math.random() * 600) + 100;
-           await page.mouse.click(x, y, { delay: 40 });
-           await mouser(page);
-           await page.reload();
-           await sleep(5);
-           await page.mouse.click(x, y, { delay: 40 });
-           await sleep(4);
-        } else if (['安全验证'].includes(title)) {
-           await mouser(page);
-           await sleep(10);
-        } else if (title === 'Attention Required! | Cloudflare') {
-           console.log(`[INFO] Blocked by Cloudflare, Title ${title}`);
-           await browser.close();
+        page.on("framenavigated", async (frame) => {
+            if (frame.url().includes("challenges.cloudflare.com")) {
+                try {
+                    await client.send("Target.detachFromTarget", {
+                        targetId: frame._id
+                    });
+                } catch (e) {
+                    console.warn(`[WARN] Cannot detach Cloudflare frame: ${e.message}`);
+                }
+            }
+        });
+
+        const response = await page.goto(host, { waitUntil: "domcontentloaded" });
+        if (!response) throw new Error("Page response null");
+
+        const status = response.status();
+        console.log(`[INFO] HTTP Status: ${status}`);
+
+        const title = await page.title();
+        console.log(`[INFO] Page Title: ${title}`);
+
+        if (title.includes("Cloudflare") || title.includes("Checking") || title.includes("Just a moment")) {
+            console.log(`[INFO] Potential Cloudflare/UAM detected`);
+            await detectChallenge(browser, page);
+        } else if (title.includes("Security Checkpoint") || title === "安全验证") {
+            await mouser(page);
+            await sleep(5);
+            await page.reload({ waitUntil: "networkidle2" });
+        } else if (status >= 400) {
+            console.error(`[ERROR] Page returned status ${status}`);
+            return null;
         } else {
-         console.log(`[INFO] Title: ${title}`);
-         await sleep(3);
-         await JsChallenge(page);
-         await CustomPageTurnstile(page);
+            await JsChallenge(page);
+            await CustomPageTurnstile(page);
         }
-        const PageTitle = await page.title();
-        console.log(`[INFO] Title Page: ${PageTitle}`);
 
         const cookies = await page.cookies();
-        if (cookies.length > 0) {
-          const _cookie = cookies.map((c) => `${c.name}=${c.value}`).join("; ");
-          console.log(`[INFO] UserAgent: ${userAgent}`);
-          console.log(`[INFO] Cookies: ${_cookie}`);
-        }
+        const cookieStr = cookies.map(c => `${c.name}=${c.value}`).join("; ");
+
+        const transport = page._client()._connection?._transport;
+        if (transport?.headers) {
+            HeadersBrowser = transport.headers;
+        }
+
+        const finalTitle = await page.title();
+
         return {
-            title: PageTitle,
-            headersall: HeadersBrowser,
-            cookies: cookies.map(cookie => cookie.name + "=" + cookie.value).join("; ").trim(),
+            title: finalTitle,
+            headersall: HeadersBrowser || {},
+            cookies: cookieStr,
             userAgent: userAgent,
-            proxy: proxy,
+            proxy: proxy
         };
-    } catch (error) {
-        console.log(`[ERROR] ${error}`);
+    } catch (err) {
+        console.error(`[FATAL] openBrowser failed: ${err.message}`);
+        return null;
     } finally {
-        await browser.close();
-        await sleep(0.2);
+        if (browser) {
+            try { await browser.close(); } catch (err) {
+                console.warn(`[WARN] Failed to close browser: ${err.message}`);
+            }
+        }
     }
 }
 
