@@ -10,6 +10,7 @@ const resemble = require('resemblejs');
 const flood = require('./flood');
 const { checkTurnstile } = require('./turnstile');
 const mouser = require('./mouser');
+const { URL } = require('url');
 
 var HeadersBrowser = '';
 let startTime = '';
@@ -120,6 +121,10 @@ const userAgents = [
 'Mozilla/5.0 (Linux; Android 10; ONEPLUS A6003) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/118.0.5993.65 Mobile Safari/537.36 EdgA/117.0.2045.53',
 ];
 
+function randomUserAgent() {
+  return userAgents[Math.floor(Math.random() * userAgents.length)];
+}
+
 //const startTime = Date.now();
 const sleep = duration => new Promise(resolve => setTimeout(resolve, duration * 1000));
 
@@ -135,17 +140,24 @@ const HeadersBasic = {
 };
 
 const HeadersUndetect = {
+  'authority': host,
+  'method': 'GET',
+  'scheme': 'https',
+  'path': new URL(host).pathname,
   'accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3',
   'Accept-Encoding': 'gzip, deflate, br',
   'accept-language': 'en-US,en;q=0.9',
   'Connection': 'keep-alive',
+  'cache-control': 'max-age=0',
   'DNT': '1',
   'sec-ch-ua-mobile': '?1',
-  'Sec-Fetch-User': '?1',
-  'Sec-Fetch-Mode': 'navigate',
-  'sec-ch-ua-platform': 'Android',
-  'Sec-Fetch-Site': 'same-origin',
-  'Sec-Fetch-Dest': 'document',
+  'sec-ch-ua-platform': '"Android"',
+  'sec-fetch-dest': 'document',
+  'sec-fetch-mode': 'navigate',
+  'sec-fetch-site': 'same-origin',
+  'sec-fetch-user': '?1',
+  'upgrade-insecure-requests': '1',
+  'user-agent': randomUserAgent(),
   'Referer': host,
 };
 
@@ -237,7 +249,7 @@ async function detectChallenge(browser, page) {
             });
 
             const image1 = fs.readFileSync('01.png');
-            const image2 = fs.readFileSync('./ex/captcha.png');
+            const image2 = fs.readFileSync('captcha.png');
             const compareImages = (image1, image2) => {
               return new Promise((resolve, reject) => {
                 resemble(image1)
@@ -387,37 +399,57 @@ async function DDGCaptcha(page) {
 
 async function openBrowser(host, proxy = null) {
     const userAgent = userAgents[Math.floor(Math.random() * userAgents.length)];
-    const options = {
-      headless: `${headless}`,
-      args: [
-          ...(proxy ? [`--proxy-server=${proxy}`] : []),
-          "--no-sandbox",
-          "--no-first-run",
-          "--test-type",
-          "--user-agent=" + userAgent,
-          "--disable-browser-side-navigation",
-          "--disable-extensions",
-          "--disable-gpu",
-          "--disable-dev-shm-usage",
-          "--ignore-certificate-errors",
-      ],
-      ignoreHTTPSErrors: true,
-      javaScriptEnabled: true,
-    };
-    if (headers === 'basic') {
-      args.push("--disable-blink-features=AutomationControlled");
-      args.push("--disable-features=IsolateOrigins,site-per-process");
-      args.push("--disable-infobars");
-      args.push("--hide-scrollbars");
-    } else if (headers === 'undetect') {
-     args.push("--disable-blink-features=AutomationControlled");
-     args.push("--disable-features=IsolateOrigins,site-per-process");
-     args.push("--disable-infobars");
-     args.push("--hide-scrollbars");
-     args.push("--disable-setuid-sandbox");
-     args.push("--mute-audio");
-     args.push("--no-zygote");
-    };
+	const args = [
+		...(proxy ? [`--proxy-server=${proxy}`] : []),
+		"--no-sandbox",
+		"--no-first-run",
+		"--test-type",
+		"--user-agent=" + userAgent,
+		"--disable-browser-side-navigation",
+		"--disable-extensions",
+		"--disable-gpu",
+		"--disable-dev-shm-usage",
+		"--ignore-certificate-errors",
+		"--disable-background-networking",
+		"--disable-default-apps",
+		"--disable-sync",
+		"--metrics-recording-only",
+		"--disable-translate",
+		"--disable-popup-blocking",
+		"--disable-component-extensions-with-background-pages",
+		"--disable-background-timer-throttling",
+		"--disable-renderer-backgrounding",
+		"--disable-device-discovery-notifications",
+		"--disable-client-side-phishing-detection",
+		"--disable-component-update",
+		"--enable-automation"
+	];
+	
+	if (headers === 'basic') {
+		args.push("--disable-blink-features=AutomationControlled");
+		args.push("--disable-features=IsolateOrigins,site-per-process");
+		args.push("--disable-infobars");
+		args.push("--hide-scrollbars");
+	} else if (headers === 'undetect') {
+		args.push("--disable-blink-features=AutomationControlled");
+		args.push("--disable-features=IsolateOrigins,site-per-process");
+		args.push("--disable-infobars");
+		args.push("--hide-scrollbars");
+		args.push("--disable-setuid-sandbox");
+		args.push("--mute-audio");
+		args.push("--no-zygote");
+		args.push("--disable-hang-monitor");
+		args.push("--disable-breakpad");
+		args.push("--disable-notifications");
+		args.push("--disable-permissions-api");
+	}
+	
+	const options = {
+		headless: `${headless}`, 
+		args: args,
+		ignoreHTTPSErrors: true,
+		javaScriptEnabled: true, 
+		};
 
     let browser;
     try {
